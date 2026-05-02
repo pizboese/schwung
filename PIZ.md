@@ -77,3 +77,85 @@ External device (USB-A)
 USB-MIDI packet format: 4 bytes `[CIN|Cable, Status, Data1, Data2]`
 - High nibble of byte 0 = cable number (0=internal, 2=external USB)
 - Low nibble of byte 0 = CIN (matches status type high nibble)
+
+---
+
+## Skipped Features (and how to revive)
+
+During the 2026-05-02 fork migration the following features were
+intentionally **dropped** to keep the fork small. They live only in
+the local backup branches `backup/instrumentOptions-2026-05-02` and
+`backup/piz-2026-05-02` (plus the older `piz-backup`). To bring one back,
+branch off `piz`, then either cherry-pick the listed commits or copy
+their entire file tree from the backup.
+
+### Quick reference table
+
+| Feature | Type | Starting commits | Approach |
+|---------|------|------------------|----------|
+| chord-engine tool module | New tool module | `34c54678 8833942c 9902ec93 311cfde1 47e759c4 0a4598c0 a608f58b db0ace9c aa11fca0 2791ae79 0e4e070c 7e3abb61 f3242689` | File-tree copy (see below) — 13 commits of WIP, not worth replaying |
+| KickBass RNBO synth | New sound generator + new host_api callback | `eadb6145 5e111e1e` | Cherry-pick — also re-adds `midi_send_to_move_in` to `plugin_api_v1.h` / shim / chain_mgmt |
+| monosynth | New sound generator | `539a64ad` | File-tree copy of `src/modules/sound_generators/monosynth/` |
+| polysynth | New sound generator (~50 RNBO headers, ~13k lines) | `cac46f47` | File-tree copy of `src/modules/sound_generators/polysynth/` |
+| Custom ducker | New audio_fx module | `d3525556` | Cherry-pick (also adds a build.sh entry) |
+| "fix volume" shim patch | shim native_display_visible logic | `a8a0a77d` | Only relevant if you re-add chord-engine (overtake_mode == 2) |
+| flite `tts_save_config` fix | Real bug fix in TTS | `a4a4aa5b` | Cherry-pick — better path: PR upstream |
+| CRLF line-ending normalization | Repo hygiene | `f66754fd` (`.gitattributes`) | Skipped because `core.autocrlf=false` is now the global default. Revive only if multiple Windows users share the repo |
+
+### How to revive a "new module" feature (chord-engine, KickBass, mono/polysynth, ducker)
+
+These are all clean new-directory additions — file-tree copy is the simplest approach:
+
+```bash
+git checkout piz
+git checkout -b feat/<name>
+
+# Copy the entire module dir from a backup
+git checkout backup/instrumentOptions-2026-05-02 -- src/modules/<category>/<id>/
+
+# For KickBass also bring back the host_api callback (multiple files):
+git checkout backup/instrumentOptions-2026-05-02 -- \
+    src/host/plugin_api_v1.h \
+    src/host/shadow_chain_mgmt.h \
+    src/host/shadow_chain_mgmt.c
+# then manually re-merge the small shim_midi_send_to_move_in addition into src/schwung_shim.c
+
+# For ducker also restore the build.sh entry (one new gcc block)
+git checkout backup/instrumentOptions-2026-05-02 -- scripts/build.sh
+# … then trim build.sh back to just the ducker block
+
+git add -A
+git commit -m "feat: re-add <name> module"
+./scripts/build.sh   # verify it still compiles on current upstream
+```
+
+The cherry-pick alternative works but pulls in messy WIP history. Prefer
+the squashed file-tree copy unless you specifically want to preserve commit
+attribution.
+
+### How to revive a "small fix" feature (flite, volume)
+
+Just cherry-pick the single commit:
+
+```bash
+git checkout piz
+git cherry-pick a4a4aa5b   # flite fix
+# or
+git cherry-pick a8a0a77d   # volume fix (only meaningful with chord-engine)
+```
+
+If the cherry-pick conflicts because upstream has moved on, look at the
+file in the backup branch (`git show backup/instrumentOptions-2026-05-02:<file>`)
+and apply the change manually.
+
+### Where to start
+
+For all of these, the **first commit** to look at is the row's first SHA
+in the table above. Use `git show <sha>` from the current `piz` (which
+has full git history including the backups) to see the original diff
+context.
+
+Before reviving anything that touches core files (`schwung_shim.c`,
+`shadow_ui.js`, `shadow_constants.h`), first re-read `docs/FORKING.md`
+and consider whether the change can be implemented as a separate
+`.mjs`/`.c` extension instead of a direct edit.
