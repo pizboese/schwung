@@ -553,6 +553,10 @@ scripts/{build.sh, install.sh, Dockerfile}
 
 Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git push --tags`. schwung-manager sees it within minutes. See `BUILDING.md`.
 
+## Branch Notes
+
+- `PIZ.md` — fork-only changes on the `piz` branch: external USB-A MIDI cable 2 → shadow slots routing on channels 9-12, 15, 16
+
 ## Documentation Index
 
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
