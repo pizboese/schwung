@@ -1,5 +1,8 @@
 **/.DS_Store
 
+# JetBrains IDE per-machine state
+.idea/
+
 # Build artifacts
 /build/
 /dist/
