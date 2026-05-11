@@ -41,6 +41,23 @@ re-enabling is a one-line change.
 
 ---
 
+## Reconciled with upstream (2026-05-11)
+
+Two earlier piz-only fixes were dropped during a rebase onto upstream/main
+because upstream landed equivalent (or stricter) fixes for the same bugs:
+
+| Dropped piz commit | Replaced by upstream | Notes |
+|--------------------|----------------------|-------|
+| `800dafe8` — `formatMetaOptionValue` accepts numeric option strings | `826e39ad` (2026-05-06) | Upstream also fixes fraction labels (`"1/4"` etc.) by swapping `parseInt()` → `Number()`. Strict superset of the local fix. |
+| `f643862d` — centralize overtake DSP param shims | `a0af0636` (2026-05-06) + `604d4508` (2026-05-04) | Upstream snapshots shim handles per-parked-id at suspend and tracks `currentSlot0DspPath` for resume-side DSP reload. Different mechanism, addresses the same parked-overtake-survives-chain-edit bug. |
+
+The remaining piz commits (cable-2 forwarding, `overtake_midi_send_external`
+rewrite, MIDI_IN monotonic timestamps, `.idea/` ignore, this doc) all live in
+`src/schwung_shim.c` (or are docs/config) and rebase cleanly because no
+upstream commit in the reconciled range touched the shim.
+
+---
+
 ## MIDI Architecture Reference
 
 ### Stock flow (without this branch)
