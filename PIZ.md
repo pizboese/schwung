@@ -95,6 +95,145 @@ USB-MIDI packet format: 4 bytes `[CIN|Cable, Status, Data1, Data2]`
 
 ---
 
+## How to do the next upstream reconciliation
+
+Self-contained playbook for "new commits landed on upstream/main; check
+whether any piz commits are now obsolete and rebase." Written so a future
+session with no conversation history can replicate the workflow.
+
+### 1. Inventory
+
+```bash
+git fetch upstream
+git log --oneline upstream/main..piz                 # piz's commits ahead of upstream
+git log --reverse upstream/main..piz | head -1       # the OLDEST piz commit; its parent is the last rebase base
+LAST_BASE=$(git rev-parse "$(git log --reverse --format=%H upstream/main..piz | head -1)^")
+git log --oneline "$LAST_BASE..upstream/main"        # new upstream commits since last rebase
+```
+
+If `LAST_BASE` equals current `upstream/main`, there's nothing new — stop.
+
+### 2. Find candidate-superseding upstream commits
+
+For each piz commit, look for upstream commits that touch the same files OR
+solve the same problem. Two complementary searches:
+
+```bash
+# Per piz commit: which upstream commits touch the same files?
+for sha in $(git log --format=%H upstream/main..piz); do
+    echo "=== piz $sha ($(git log -1 --format=%s $sha)) ==="
+    files=$(git show --name-only --format= "$sha")
+    git log --oneline "$LAST_BASE..upstream/main" -- $files
+done
+
+# Read each candidate to decide if it supersedes
+git show <upstream-sha>
+git show <piz-sha>
+```
+
+A piz commit is **obsolete** when an upstream commit fixes the same
+user-visible bug — even if the mechanism differs. Examples from past
+rounds:
+
+- piz monotonic-timestamps and upstream defer-guard-with-saw_existing-bail
+  both prevent the same SIGABRT. Drop piz; upstream is more principled.
+- piz hardcoded-channel-filter (ch 9-12/15/16) and upstream per-slot
+  receive_channel dispatcher both route external cable-2 MIDI to slots.
+  Drop piz; upstream is more general.
+
+A piz commit is **still relevant** when upstream hasn't touched the same
+code path or hasn't fixed the same problem. Example: `overtake_midi_send_external`
+— upstream's version is still the original buggy direct-hw-write.
+
+### 3. Per-feature triage with the user
+
+**Never bulk-apply.** Ask the user one question per candidate-obsolete piz
+commit (`AskUserQuestion` with 2-3 options: drop / keep / belt-and-suspenders).
+Include the upstream replacement SHAs and a short why. The user wants the
+final call on each piece, not a summary at the end.
+
+### 4. Safety branch
+
+```bash
+git branch "piz-pre-$(date -I)-rebase" piz
+```
+
+Convention: `piz-pre-YYYY-MM-DD-rebase`. Keep locally; do not push.
+
+### 5. Rebase
+
+Drop pure-code commits cleanly. For a commit that mixes doc changes (PIZ.md,
+CLAUDE.md) with now-obsolete C code, you must KEEP the doc changes — later
+piz commits that modify PIZ.md will fail to apply if PIZ.md doesn't exist
+at their parent. Use `edit` mode and surgically revert just the C files:
+
+```bash
+GIT_SEQUENCE_EDITOR="sed -i \
+  -e '/^pick <obsolete-pure-sha>/s/^pick/drop/' \
+  -e '/^pick <mixed-sha>/s/^pick/edit/'" \
+  git rebase -i --onto upstream/main "$LAST_BASE" piz
+
+# When rebase pauses on the mixed-sha:
+git checkout HEAD~1 -- <obsolete-c-files...>   # revert C parts; keep docs
+git commit --amend -m "docs: <new message reflecting it's now docs-only>"
+git rebase --continue
+```
+
+### 6. Update PIZ.md
+
+After the rebase finishes, edit PIZ.md:
+- Add a new dated subsection under "Reconciled with upstream" with a table
+  of dropped piz commits → replacing upstream commits.
+- If the dropped commits were the last delta in a section of "Changes Made",
+  rewrite that section to reflect what's actually still in tree.
+- Update `## Branch Goal` if the scope of piz changed materially.
+- Update the CLAUDE.md "Branch Notes" one-liner if the piz delta description
+  changed.
+
+Commit as `docs(PIZ): record YYYY-MM-DD rebase — <one-line reason>`.
+
+### 7. Verify
+
+```bash
+./scripts/build.sh                                            # must succeed
+./tests/shadow/test_format_meta_option_value.sh               # spot-check
+./tests/shadow/test_parked_overtake_shim_isolation.sh         # spot-check
+
+# Sanity: confirm any obsolete piz functions are actually gone
+grep -rn '<dropped-function-name>' src/ || echo "ok — absent"
+# Sanity: confirm replacement upstream functions are present
+grep -rn '<upstream-replacement-name>' src/ | head
+```
+
+For on-device smoke testing see CLAUDE.md (`Testing` section).
+
+### 8. Sync main + push
+
+```bash
+# Local main is a mirror of upstream/main — fast-forward when stale.
+git update-ref refs/heads/main upstream/main
+git push origin main                                # plain push, no force
+
+# Origin/piz history was rewritten — use lease to abort if origin moved.
+git push --force-with-lease origin piz
+```
+
+If the lease fails, origin moved while you were rebasing. Re-fetch, diff
+your local piz against `origin/piz`, decide whether to incorporate the
+remote-side change or override it.
+
+### Gotchas
+
+- **Don't drop the commit that creates PIZ.md.** Later piz commits assume
+  PIZ.md exists. If you ever need to drop that whole commit, you must
+  re-create a minimal PIZ.md in a new commit before the dependent ones run.
+- **Submodule pointer drift** (`libs/link`) is normal in this repo and not
+  part of any piz commit. Leave it as a working-tree change.
+- **Force-push with lease** (`--force-with-lease`), never bare `--force`,
+  on user-owned branches.
+
+---
+
 ## Skipped Features (and how to revive)
 
 During the 2026-05-02 fork migration the following features were
