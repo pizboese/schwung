@@ -555,7 +555,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 
 ## Branch Notes
 
-- `PIZ.md` — fork-only changes on the `piz` branch: external USB-A MIDI cable 2 → shadow slots routing on channels 9-12, 15, 16
+- `PIZ.md` — fork-only changes on the `piz` branch: `overtake_midi_send_external` rewrite (uses shadow MIDI_OUT buffer instead of direct hw writes + custom ioctl flush). The earlier cable-2 hardcoded-channel forwarder was dropped on 2026-05-14 in favor of upstream's general per-slot `receive_channel` dispatch.
 
 ## Documentation Index
 

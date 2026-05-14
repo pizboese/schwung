@@ -5,81 +5,79 @@ decisions and notes that don't belong upstream.
 
 ## Branch Goal
 
-Extend Schwung's MIDI routing so that external USB-A MIDI input (cable 2)
-reaches shadow slots directly, without relying on Move's internal MIDI echo
-or per-track channel configuration.
+Carry a small set of fork-only fixes for the `piz` deployment, while staying
+close to upstream. As of 2026-05-14, the only remaining C-code delta versus
+upstream is the `overtake_midi_send_external` rewrite below — upstream has
+since landed equivalents for everything else.
 
 ---
 
 ## Changes Made
 
-### 1. External MIDI_IN cable 2 → shadow slots
+### 1. `overtake_midi_send_external` → shadow MIDI_OUT buffer
 
-**Files changed:**
-- `src/host/shadow_midi.c` — new function `shadow_forward_external_midi_in_to_slots()`
-- `src/host/shadow_midi.h` — declaration added
-- `src/schwung_shim.c` — old call commented out, new call added
+**Files changed:** `src/schwung_shim.c`
 
 **What it does:**
 
-The existing `shadow_forward_external_cc_to_out()` only forwarded CC / pitch
-bend / aftertouch from MIDI_IN cable 2 to MIDI_OUT, relying on Move to echo
-notes. That doesn't work on channels Move tracks aren't configured to listen
-on.
+Replaces the upstream implementation that wrote directly to
+`hardware_mmap_addr` and fired a custom `ioctl(_IOC_NONE,0,0xa,0)` flush.
+That bypass memset'd the display region (offsets 80–255) and raced the
+shadow→hw copy that runs every WAIT_SEND_SIZE ioctl, producing display
+corruption + intermittent / dropped MIDI out.
 
-The new `shadow_forward_external_midi_in_to_slots()` reads MIDI_IN cable 2
-directly and forwards notes (`0x80`/`0x90`) and CC (`0xB0`) on **channels
-9–12, 15, and 16** (zero-indexed 8–11, 14, 15) straight to shadow slots via
-`shadow_chain_dispatch_midi_to_slots()`, bypassing Move's echo entirely.
+The piz version drops the packet into an empty 4-byte slot of the shadow
+MIDI_OUT region (`global_mmap_addr + MIDI_OUT_OFFSET`, 80 bytes / 20 packets
+max). The SPI library's normal pre-transfer copy ships it on the next cycle.
+Mirrors `shadow_inject_ui_midi_out` in `src/host/shadow_midi.c`.
 
-`shadow_forward_external_cc_to_out()` is commented out at the call site in
-`schwung_shim.c` since its CC forwarding is superseded.
-
-**Original code preserved:** the `shadow_forward_external_cc_to_out()` function
-body in `shadow_midi.c` is untouched. Only the call site is commented out, so
-re-enabling is a one-line change.
+**Why this is still piz-only:** upstream's `overtake_midi_send_external` is
+unchanged from the buggy original. PR-able upstream — file under "things to
+upstream when we have bandwidth."
 
 ---
 
-## Reconciled with upstream (2026-05-11)
+## Reconciled with upstream
 
-Two earlier piz-only fixes were dropped during a rebase onto upstream/main
-because upstream landed equivalent (or stricter) fixes for the same bugs:
+Rebases onto upstream/main drop piz commits whose user-visible problem was
+fixed by upstream (sometimes with a stricter/more general mechanism).
+
+### 2026-05-14 rebase (onto upstream `188e9848`)
+
+| Dropped piz commit | Replaced by upstream | Notes |
+|--------------------|----------------------|-------|
+| `88557090` (C-code parts) — `shadow_forward_external_midi_in_to_slots()`, hardcoded ch 9-12/15/16 | `f3b27227` (#78, 2026-05-12) + `62a04135` (2026-05-14) | Upstream adds `shim_forward_cable2_to_move()` (re-injects cable-2 as cable-0 so Move's tracks route natively) + `shadow_dispatch_cable2_channeled_slots()` (dispatches to chain slots by each slot's configured `receive_channel`). General solution — configure receive channels per slot instead of hardcoding. Also includes dedup ring + echo canonicalization (62a04135). The docs additions from 88557090 are preserved as commit `fd1ac92a` (now: "docs: add PIZ.md and CLAUDE.md branch notes"). |
+| `56eadd50` — monotonic MIDI_IN timestamps to prevent SIGABRT | `99f4e6c2` (#77, 2026-05-12) | Upstream switches the inject defer guard to cable-agnostic and adds a `saw_existing` bail so inject only ever writes into a contiguous empty region — making the non-monotonic-timestamp failure mode unreachable. |
+
+### 2026-05-11 rebase (onto upstream `c1657e61`)
 
 | Dropped piz commit | Replaced by upstream | Notes |
 |--------------------|----------------------|-------|
 | `800dafe8` — `formatMetaOptionValue` accepts numeric option strings | `826e39ad` (2026-05-06) | Upstream also fixes fraction labels (`"1/4"` etc.) by swapping `parseInt()` → `Number()`. Strict superset of the local fix. |
 | `f643862d` — centralize overtake DSP param shims | `a0af0636` (2026-05-06) + `604d4508` (2026-05-04) | Upstream snapshots shim handles per-parked-id at suspend and tracks `currentSlot0DspPath` for resume-side DSP reload. Different mechanism, addresses the same parked-overtake-survives-chain-edit bug. |
 
-The remaining piz commits (cable-2 forwarding, `overtake_midi_send_external`
-rewrite, MIDI_IN monotonic timestamps, `.idea/` ignore, this doc) all live in
-`src/schwung_shim.c` (or are docs/config) and rebase cleanly because no
-upstream commit in the reconciled range touched the shim.
-
 ---
 
 ## MIDI Architecture Reference
 
-### Stock flow (without this branch)
+### External USB-A (cable 2) routing (upstream, post-2026-05-12)
 
 ```
 External device (USB-A)
   → MIDI_IN buffer, cable 2
-  → Move processes internally
-  → Move echoes notes to MIDI_OUT, cable 2  (CCs not echoed)
-  → shadow_inprocess_process_midi() reads MIDI_OUT cable 2
-  → shadow_chain_dispatch_midi_to_slots()
-  → DSP plugin on_midi()
+  → shim_pre_transfer:
+      → shadow_dispatch_direct_external_midi()        (THRU-mode slots, always)
+      → shim_forward_cable2_to_move()                 (gated: no tool active)
+            └── re-inject as cable-0 so Move's DSP routes by channel
+      → shadow_dispatch_cable2_channeled_slots()      (gated: no tool active)
+            └── dispatch to chain slots by receive_channel
+  → shadow_inprocess_process_midi() processes Move's MIDI_OUT echo
+      └── canonicalized dedup ring suppresses duplicates of MIDI_IN events
 ```
 
-### New flow (this branch)
-
-```
-External device (USB-A)
-  → MIDI_IN buffer, cable 2
-  → shadow_forward_external_midi_in_to_slots()  [NEW]
-      └── ch 9-12, 15, 16 (note/CC): dispatch directly to shadow slots
-```
+Configure per-slot `receive_channel` to receive external MIDI on the channels
+of your choice. The hardcoded ch 9-12/15/16 filter from the pre-2026-05-14
+piz branch is no longer present; pick whatever channels you want.
 
 ### Key offsets (from `shadow_midi.h`)
 
