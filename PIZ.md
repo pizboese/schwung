@@ -42,6 +42,24 @@ upstream when we have bandwidth."
 Rebases onto upstream/main drop piz commits whose user-visible problem was
 fixed by upstream (sometimes with a stricter/more general mechanism).
 
+### 2026-05-17 rebase (onto upstream `45fbe299`)
+
+No piz commits dropped — the sole code delta (`overtake_midi_send_external`,
+see §"Changes Made" #1) remains unaddressed upstream. Rebase was mechanical
+modulo a trivial CLAUDE.md conflict (upstream `ec683dd9` compressed the file;
+the piz Branch Notes paragraph was re-applied to the compressed layout).
+
+One related upstream change worth recording:
+
+- Upstream `92beafdf` (2026-05-16) removed `shim_forward_cable2_to_move()` —
+  the cable-0 reinjection trick that the 2026-05-14 reconciliation cited as
+  part of upstream's replacement for piz `88557090`. Channel-1 notes were
+  tripping Move's pad/clip protocol. The slot-dispatch part
+  (`shadow_dispatch_cable2_channeled_slots`) survives, so our rationale for
+  dropping `88557090` is unaffected. The "MIDI Architecture Reference"
+  diagram that previously lived in this file documented the superseded flow
+  and has been removed rather than re-maintained.
+
 ### 2026-05-14 rebase (onto upstream `188e9848`)
 
 | Dropped piz commit | Replaced by upstream | Notes |
@@ -55,43 +73,6 @@ fixed by upstream (sometimes with a stricter/more general mechanism).
 |--------------------|----------------------|-------|
 | `800dafe8` — `formatMetaOptionValue` accepts numeric option strings | `826e39ad` (2026-05-06) | Upstream also fixes fraction labels (`"1/4"` etc.) by swapping `parseInt()` → `Number()`. Strict superset of the local fix. |
 | `f643862d` — centralize overtake DSP param shims | `a0af0636` (2026-05-06) + `604d4508` (2026-05-04) | Upstream snapshots shim handles per-parked-id at suspend and tracks `currentSlot0DspPath` for resume-side DSP reload. Different mechanism, addresses the same parked-overtake-survives-chain-edit bug. |
-
----
-
-## MIDI Architecture Reference
-
-### External USB-A (cable 2) routing (upstream, post-2026-05-12)
-
-```
-External device (USB-A)
-  → MIDI_IN buffer, cable 2
-  → shim_pre_transfer:
-      → shadow_dispatch_direct_external_midi()        (THRU-mode slots, always)
-      → shim_forward_cable2_to_move()                 (gated: no tool active)
-            └── re-inject as cable-0 so Move's DSP routes by channel
-      → shadow_dispatch_cable2_channeled_slots()      (gated: no tool active)
-            └── dispatch to chain slots by receive_channel
-  → shadow_inprocess_process_midi() processes Move's MIDI_OUT echo
-      └── canonicalized dedup ring suppresses duplicates of MIDI_IN events
-```
-
-Configure per-slot `receive_channel` to receive external MIDI on the channels
-of your choice. The hardcoded ch 9-12/15/16 filter from the pre-2026-05-14
-piz branch is no longer present; pick whatever channels you want.
-
-### Key offsets (from `shadow_midi.h`)
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `MIDI_OUT_OFFSET` | 0 | Move's MIDI output (musical notes from tracks) |
-| `AUDIO_OUT_OFFSET` | 256 | Audio output |
-| `MIDI_IN_OFFSET` | 2048 | Raw MIDI input from hardware |
-| `AUDIO_IN_OFFSET` | 2304 | Audio input |
-| `MIDI_BUFFER_SIZE` | 4096 | Size of each MIDI buffer |
-
-USB-MIDI packet format: 4 bytes `[CIN|Cable, Status, Data1, Data2]`
-- High nibble of byte 0 = cable number (0=internal, 2=external USB)
-- Low nibble of byte 0 = CIN (matches status type high nibble)
 
 ---
 
