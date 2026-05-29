@@ -6,37 +6,16 @@ decisions and notes that don't belong upstream.
 ## Branch Goal
 
 Carry a small set of fork-only fixes for the `piz` deployment, while staying
-close to upstream. As of 2026-05-17, the C-code deltas versus upstream are
-the `overtake_midi_send_external` rewrite and the FX_BROADCAST fix for the
-cable-2 channeled dispatch path (see below) — upstream has since landed
-equivalents for everything else.
+close to upstream. As of 2026-05-29, the sole C-code delta versus upstream is
+the FX_BROADCAST fix for the cable-2 channeled dispatch path (see below) —
+upstream has since landed equivalents for everything else, including the
+`overtake_midi_send_external` rewrite (v0.9.16, see Reconciled below).
 
 ---
 
 ## Changes Made
 
-### 1. `overtake_midi_send_external` → shadow MIDI_OUT buffer
-
-**Files changed:** `src/schwung_shim.c`
-
-**What it does:**
-
-Replaces the upstream implementation that wrote directly to
-`hardware_mmap_addr` and fired a custom `ioctl(_IOC_NONE,0,0xa,0)` flush.
-That bypass memset'd the display region (offsets 80–255) and raced the
-shadow→hw copy that runs every WAIT_SEND_SIZE ioctl, producing display
-corruption + intermittent / dropped MIDI out.
-
-The piz version drops the packet into an empty 4-byte slot of the shadow
-MIDI_OUT region (`global_mmap_addr + MIDI_OUT_OFFSET`, 80 bytes / 20 packets
-max). The SPI library's normal pre-transfer copy ships it on the next cycle.
-Mirrors `shadow_inject_ui_midi_out` in `src/host/shadow_midi.c`.
-
-**Why this is still piz-only:** upstream's `overtake_midi_send_external` is
-unchanged from the buggy original. PR-able upstream — file under "things to
-upstream when we have bandwidth."
-
-### 2. FX_BROADCAST + Master-FX forward in `shadow_dispatch_cable2_channeled_slots`
+### 1. FX_BROADCAST + Master-FX forward in `shadow_dispatch_cable2_channeled_slots`
 
 **Files changed:** `src/host/shadow_midi.c`
 
@@ -65,6 +44,22 @@ filter. Worth filing upstream when convenient.
 
 Rebases onto upstream/main drop piz commits whose user-visible problem was
 fixed by upstream (sometimes with a stricter/more general mechanism).
+
+### 2026-05-29 rebase (onto upstream `55a2468f`)
+
+Upstream shipped **v0.9.16**, whose overtake MIDI-out overhaul supersedes the
+fork's `overtake_midi_send_external` rewrite.
+
+| Dropped piz commit | Replaced by upstream | Notes |
+|--------------------|----------------------|-------|
+| `b3fc60d0` — `overtake_midi_send_external` → shadow MIDI_OUT buffer | `8ccec031` (#93) + `dffeb897` (both v0.9.16) | Both write 4-byte packets into empty slots of the **same** shadow MIDI_OUT region. Upstream wraps it in a lock-free SPSC ring drained on the audio thread inside `shim_pre_transfer` — removing the producer↔mailbox race the fork version still had — adds the opt-in sentinel `shadow_overtake_send_external_async_active()`, and resets the ring on DSP unload (`dffeb897`). Upstream's drain is explicitly sized for chord-rate sequencer traffic. Strict improvement → dropped. |
+
+The chord sequencer that motivated `b3fc60d0` is now an external module
+(`chords-sequencer`, repo `~/CLionProjects/chords-sequencer/`). Its DSP calls
+`host->midi_send_external` from the audio thread and inherits upstream's
+glitch-free path for free on a v0.9.16 host — no module change required beyond
+declaring `min_host_version: "0.9.16"`. The stale in-repo dev branch
+`feat/chord-sequencer-0.9.9` was deleted this round.
 
 ### 2026-05-17 rebase (onto upstream `45fbe299`)
 
@@ -252,7 +247,7 @@ their entire file tree from the backup.
 
 | Feature | Type | Starting commits | Approach |
 |---------|------|------------------|----------|
-| chord-engine tool module | New tool module | `34c54678 8833942c 9902ec93 311cfde1 47e759c4 0a4598c0 a608f58b db0ace9c aa11fca0 2791ae79 0e4e070c 7e3abb61 f3242689` | File-tree copy (see below) — 13 commits of WIP, not worth replaying |
+| chord-engine tool module | New tool module | `34c54678 8833942c 9902ec93 311cfde1 47e759c4 0a4598c0 a608f58b db0ace9c aa11fca0 2791ae79 0e4e070c 7e3abb61 f3242689` | **Superseded by the external `chords-sequencer` module** (`~/CLionProjects/chords-sequencer/`, installed via the Module Store). These backup commits are historical only — do not revive in-tree. |
 | KickBass RNBO synth | New sound generator + new host_api callback | `eadb6145 5e111e1e` | Cherry-pick — also re-adds `midi_send_to_move_in` to `plugin_api_v1.h` / shim / chain_mgmt |
 | monosynth | New sound generator | `539a64ad` | File-tree copy of `src/modules/sound_generators/monosynth/` |
 | polysynth | New sound generator (~50 RNBO headers, ~13k lines) | `cac46f47` | File-tree copy of `src/modules/sound_generators/polysynth/` |
