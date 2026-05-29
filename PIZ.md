@@ -6,9 +6,10 @@ decisions and notes that don't belong upstream.
 ## Branch Goal
 
 Carry a small set of fork-only fixes for the `piz` deployment, while staying
-close to upstream. As of 2026-05-14, the only remaining C-code delta versus
-upstream is the `overtake_midi_send_external` rewrite below — upstream has
-since landed equivalents for everything else.
+close to upstream. As of 2026-05-17, the C-code deltas versus upstream are
+the `overtake_midi_send_external` rewrite and the FX_BROADCAST fix for the
+cable-2 channeled dispatch path (see below) — upstream has since landed
+equivalents for everything else.
 
 ---
 
@@ -34,6 +35,29 @@ Mirrors `shadow_inject_ui_midi_out` in `src/host/shadow_midi.c`.
 **Why this is still piz-only:** upstream's `overtake_midi_send_external` is
 unchanged from the buggy original. PR-able upstream — file under "things to
 upstream when we have bandwidth."
+
+### 2. FX_BROADCAST + Master-FX forward in `shadow_dispatch_cable2_channeled_slots`
+
+**Files changed:** `src/host/shadow_midi.c`
+
+**What it does:**
+
+After the 2026-05-14 rebase replaced piz `88557090` with upstream's general
+per-slot `receive_channel` filter, cable-2 events that didn't match any slot's
+channel were dropped silently — including events meant for audio FX (e.g. the
+ducker module, ch 15 by user config) or for the Master FX chain. The other
+two MIDI-dispatch paths (`shadow_chain_dispatch_midi_to_slots` for MIDI_OUT
+echo, `shadow_dispatch_direct_external_midi` for THRU slots) already broadcast
+to `MOVE_MIDI_SOURCE_FX_BROADCAST` + call `host_master_fx_forward_midi` after
+their per-slot filter. The cable-2 channeled path was missing both.
+
+This adds the same FX_BROADCAST + master-FX forward block inside the event
+loop, gated on `!has_direct` so it only fires when no THRU slot exists (the
+THRU path already broadcasts in that case, avoiding double-trigger).
+
+**Why this is still piz-only:** the fix is small and clearly aligned with
+upstream's design intent — both other dispatch paths broadcast after their
+filter. Worth filing upstream when convenient.
 
 ---
 
