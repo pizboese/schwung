@@ -6,10 +6,11 @@ decisions and notes that don't belong upstream.
 ## Branch Goal
 
 Carry a small set of fork-only fixes for the `piz` deployment, while staying
-close to upstream. As of 2026-05-29, the sole C-code delta versus upstream is
-the FX_BROADCAST fix for the cable-2 channeled dispatch path (see below) —
-upstream has since landed equivalents for everything else, including the
-`overtake_midi_send_external` rewrite (v0.9.16, see Reconciled below).
+close to upstream. As of 2026-06-07 (upstream v0.9.17), the sole C-code delta
+versus upstream is the FX_BROADCAST fix for the cable-2 channeled dispatch path
+(see below) — upstream has since landed equivalents for everything else,
+including the `overtake_midi_send_external` rewrite (v0.9.16, see Reconciled
+below).
 
 ---
 
@@ -44,6 +45,28 @@ filter. Worth filing upstream when convenient.
 
 Rebases onto upstream/main drop piz commits whose user-visible problem was
 fixed by upstream (sometimes with a stricter/more general mechanism).
+
+### 2026-06-07 rebase (onto upstream `759095a6`)
+
+Upstream shipped **v0.9.17** (`55a2468f..759095a6`). **No piz commits dropped** —
+the sole code delta (FX_BROADCAST in `shadow_dispatch_cable2_channeled_slots`,
+see §"Changes Made" #1) remains untouched upstream. None of the 16 new upstream
+commits touched any file a piz commit modifies, so the rebase replayed cleanly
+with zero conflicts.
+
+Notable upstream changes this batch (all inherited automatically, none
+fork-relevant beyond review):
+
+- `bb84ac94` — gates `shadow_forward_external_cc_to_out()` on an overtake DSP
+  being loaded. Lives in `shim_pre_transfer` (the MIDI_OUT cable-2 forward path),
+  **distinct** from our FX_BROADCAST delta in `shadow_dispatch_cable2_channeled_slots`
+  (the MIDI_IN slot-dispatch path) — no interaction. Reviewed: our cable-2
+  channeled fix is unaffected.
+- `42741b26` — Move Spkr EQ mode (Auto/Off/On), fixes hollow audio on headphones.
+- `1be056a3` / `2c6182aa` — absolute knob automation via CC 102–109.
+- `ec1f8fed` — MPC Curve velocity shaping in the Velocity Scale MIDI FX.
+- `0eab85a3` / `6bd6ca4a` — Filter + Libpo32 catalog modules.
+- `3eca0b05` — host-aware SSH key resolution in install/fix-ssh scripts.
 
 ### 2026-05-29 rebase (onto upstream `55a2468f`)
 
