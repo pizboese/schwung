@@ -120,9 +120,41 @@ One related upstream change worth recording:
 
 ## How to do the next upstream reconciliation
 
-Self-contained playbook for "new commits landed on upstream/main; check
-whether any piz commits are now obsolete and rebase." Written so a future
-session with no conversation history can replicate the workflow.
+**This section is the sole source of truth for integrating upstream changes.**
+It is a self-contained playbook for "new commits landed on upstream/main; check
+whether any piz commits are now obsolete, then rebase, build, push, and deploy."
+A future session with no conversation history should be able to run the entire
+job from this section alone — do not assume any prior chat context.
+
+### 0. Prerequisites & environment
+
+- **Fork model.** `origin` = `git@github.com:pizboese/schwung.git` (this fork),
+  `upstream` = `https://github.com/charlesvestal/schwung` (Charles' repo).
+  Local `main` is a **mirror of `upstream/main`** — never commit fork work to it;
+  it only ever gets fast-forwarded to upstream. All fork work lives on **`piz`**.
+- **What piz carries.** As of the latest reconciliation the only C-code delta is
+  the FX_BROADCAST fix (§"Changes Made" #1). Everything else on piz is docs
+  (`PIZ.md`, `CLAUDE.md`) + `.gitignore`. Before starting, confirm what the delta
+  actually is: `git diff --stat upstream/main..piz` should show a short, all-fork
+  file list. If it shows unexpected C files, investigate before rebasing.
+- **External chord-sequencer module.** The chord sequencer that motivated the
+  (now-dropped) `overtake_midi_send_external` work is an **external module**, not
+  in this tree. It lives at `~/CLionProjects/chords-sequencer/` (module id
+  `chords-sequencer`, installed via the Module Store). Its DSP emits MIDI from the
+  audio thread via `host->midi_send_external` and relies on the host's overtake
+  MIDI-out ring (upstream v0.9.16+). When an upstream batch changes the overtake
+  MIDI-out path or any host_api signature, check that repo (§6).
+- **Conventions.**
+  - Force-push user branches with `--force-with-lease`, **never** bare `--force`.
+  - End every commit message with the trailer:
+    `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
+  - Per-feature triage with the user, never bulk-apply (§3).
+  - `libs/link` submodule pointer drift is normal; leave it out of commits
+    unless it intentionally advances (verify direction with
+    `git diff --submodule=log` — a *rewind* is a mistake, see Gotchas).
+- **SSH note (WSL).** If `ssh`/`scp`/`git push` fails with "Bad owner or
+  permissions" on `~/.ssh/config`, run `chmod 600 ~/.ssh/config` (WSL
+  periodically resets it to 777) and retry.
 
 ### 1. Inventory
 
@@ -213,9 +245,26 @@ After the rebase finishes, edit PIZ.md:
 - Update the CLAUDE.md "Branch Notes" one-liner if the piz delta description
   changed.
 
-Commit as `docs(PIZ): record YYYY-MM-DD rebase — <one-line reason>`.
+Commit as `docs(PIZ): record YYYY-MM-DD rebase — <one-line reason>`
+(with the `Co-Authored-By` trailer).
 
-### 7. Verify
+### 6b. Check the external chord-sequencer repo (only if relevant)
+
+If the upstream batch touched the **overtake MIDI-out path**, any **host_api
+signature** (`plugin_api_v1.h`/`v2`), or the **overtake module lifecycle**,
+inspect `~/CLionProjects/chords-sequencer/`:
+
+- DSP MIDI emit is `host->midi_send_external(pkt, 4)` in `src/dsp/chord_engine.c`.
+  If the host_api signature for that callback is unchanged, no code change is
+  needed — the module inherits the new host path for free.
+- If the change raises the minimum host version the module depends on, bump
+  `min_host_version` in **both** `src/module.json` and
+  `dist/chords-sequencer/module.json`, and commit in that repo separately
+  (it's its own git repo, not a submodule here).
+
+Most batches need nothing here. Note it in the rebase record either way.
+
+### 7. Build + verify
 
 ```bash
 ./scripts/build.sh                                            # must succeed
@@ -226,9 +275,12 @@ Commit as `docs(PIZ): record YYYY-MM-DD rebase — <one-line reason>`.
 grep -rn '<dropped-function-name>' src/ || echo "ok — absent"
 # Sanity: confirm replacement upstream functions are present
 grep -rn '<upstream-replacement-name>' src/ | head
+# Sanity: confirm the FX_BROADCAST delta survived the rebase
+git grep -n 'has_direct' src/host/shadow_midi.c | head
 ```
 
-For on-device smoke testing see CLAUDE.md (`Testing` section).
+The sf2 `dsp.so: cannot open` line in build output is benign (sf2 is an external
+module, not built in-tree).
 
 ### 8. Sync main + push
 
@@ -245,15 +297,49 @@ If the lease fails, origin moved while you were rebasing. Re-fetch, diff
 your local piz against `origin/piz`, decide whether to incorporate the
 remote-side change or override it.
 
+### 9. Deploy to device + smoke test
+
+The reconciliation finish line is a deployed, verified device. Deploying
+restarts the schwung service on the Move (it reboots ~5–45 s), so **confirm
+with the user before running it**.
+
+```bash
+# Deploy the local build (host + shim only; leaves installed modules alone).
+# This script handles setuid, symlinks, feature config, ownership, and the
+# service restart — never scp individual files.
+./scripts/install.sh local --skip-modules --skip-confirmation
+```
+
+Device is `ssh ableton@move.local`. On success the script prints
+"Shim mapped — Move is up with the new install." For on-device logging:
+
+```bash
+ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"   # enable
+ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"     # view
+ssh ableton@move.local "rm -f /data/UserData/schwung/debug_log_on"    # disable
+```
+
+**Never write to `/tmp` on the device** (root FS is ~full); use
+`/data/UserData/` for everything.
+
 ### Gotchas
 
 - **Don't drop the commit that creates PIZ.md.** Later piz commits assume
   PIZ.md exists. If you ever need to drop that whole commit, you must
   re-create a minimal PIZ.md in a new commit before the dependent ones run.
 - **Submodule pointer drift** (`libs/link`) is normal in this repo and not
-  part of any piz commit. Leave it as a working-tree change.
+  part of any piz commit. Leave it as a working-tree change. **Never commit a
+  `libs/link` pointer that rewinds it** — before committing any submodule bump,
+  run `git diff --submodule=log` and confirm the pointer moves *forward*. A past
+  session accidentally committed a backward pin (stale local checkout) that
+  dropped robustness fixes and diverged piz from upstream; it had to be reverted.
+  If in doubt, set `libs/link` to match upstream/main:
+  `git -C libs/link checkout "$(git ls-tree upstream/main libs/link | awk '{print $3}')"`.
 - **Force-push with lease** (`--force-with-lease`), never bare `--force`,
   on user-owned branches.
+- **Ask, don't assume, on each drop.** Even when an upstream commit looks like a
+  clear superset, surface it to the user one-by-one (§3). The user wants the call
+  on each piece. The deploy step (§9) also needs explicit go-ahead.
 
 ---
 
