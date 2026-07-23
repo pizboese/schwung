@@ -6,7 +6,7 @@ decisions and notes that don't belong upstream.
 ## Branch Goal
 
 Carry a small set of fork-only fixes for the `piz` deployment, while staying
-close to upstream. As of 2026-06-07 (upstream v0.9.17), the sole C-code delta
+close to upstream. As of 2026-07-23 (upstream v0.11.6), the sole C-code delta
 versus upstream is the FX_BROADCAST fix for the cable-2 channeled dispatch path
 (see below) — upstream has since landed equivalents for everything else,
 including the `overtake_midi_send_external` rewrite (v0.9.16, see Reconciled
@@ -45,6 +45,73 @@ filter. Worth filing upstream when convenient.
 
 Rebases onto upstream/main drop piz commits whose user-visible problem was
 fixed by upstream (sometimes with a stricter/more general mechanism).
+
+### 2026-07-23 rebase (onto upstream `4519d26d`, v0.11.6)
+
+Large upstream jump: **v0.9.17 → v0.11.6** (~1000 upstream commits since the
+fork's last mirror point). **No piz commits dropped** — the sole code delta
+(FX_BROADCAST in `shadow_dispatch_cable2_channeled_slots`, see §"Changes Made"
+#1) is *still* unaddressed upstream: v0.11.6's version of that function
+dispatches matched slots via `MOVE_MIDI_SOURCE_EXTERNAL` but still does **not**
+broadcast unmatched cable-2 events to audio FX / Master FX. Fix re-applied.
+
+**Topology note (important for the next session).** The playbook's automated
+`LAST_BASE` formula (§1) *misfired* this round and computed v0.7.1. Cause: the
+fork's local `main` is **not** a SHA-identical fast-forward of `upstream/main` —
+at some earlier point (the 2026-05-02 migration) fork `main` was rebased, so it
+and upstream share only an ancient merge-base (`4b7e5fb6`) and upstream has its
+own v0.9.17 commits under *different SHAs*. This makes `upstream/main..piz` look
+like a 207-file monster. The **true** piz delta is `git diff --stat main..piz` =
+4 files (`.gitignore`, `CLAUDE.md`, `PIZ.md`, `shadow_midi.c`). The correct
+rebase was therefore `git rebase --onto upstream/main main piz` (replay the 11
+piz commits that sit on top of fork-`main`), **not** the formula's base. If the
+formula gives an absurd base again, use current `main` as `LAST_BASE`.
+
+The FX_BROADCAST commit re-applied conflict-free even though upstream heavily
+**refactored** `shadow_dispatch_cable2_channeled_slots` (added `event_dedup`,
+`shadow_external_dispatch_record`, lazy slot activation, idle-wake, and
+`shadow_chain_apply_transpose`). The 3-way merge kept the fix in the right
+place (top-of-function `has_direct` guard + broadcast block at the end of the
+per-event loop) because the anchor context lines survived. Verified by reading
+the resulting function, not just the clean-apply exit code.
+
+Notable upstream changes this batch (inherited automatically; reviewed, none
+break the piz delta):
+
+- **Transport/beat-clock service** (`f0fe55f9`, `0a9a7c8a`, `53d2b5f9`,
+  `7e456642`, `4604810b`): new `get_beat_position()` host API (appended to
+  `host_api_v1_t` — ABI-additive), synced-LFO phase-lock, retained tempo after
+  stop. Does not touch the cable-2 dispatch path.
+- **Overtake lifecycle** (`5b761e58`, `1097bc54`, `ad2233fa`): `host_suspend_overtake()`
+  + `suspend_self_managed` capability, Back passed to self-managed modules,
+  feedback-guard modal survives overtake entry. Opt-in; classic overtake
+  modules (incl. `chords-sequencer`) unaffected.
+- **`chain_host.c` split** reverted in-fork-tree terms — upstream keeps the
+  monolith split into `chain_internal.h`/`chain_json.c`/`chain_midi.c`/etc.;
+  inherited wholesale.
+- On-device `store` module retired (install/update now via `schwung-manager`);
+  reflected in the freshly-inherited `CLAUDE.md`.
+- New tracing/testing infra (`schwung_trace.c`, `test_daemon`,
+  `tools/pytest-schwung`, OTLP spans) — inherited, no fork interaction.
+
+**External modules checked (§6b).** Both sibling repos keep working on v0.11.6
+with **no code change required**:
+
+- `~/CLionProjects/schwung-vdrum/` (sound_generator, api_v2, v0.5.0): uses **zero**
+  `host->` callbacks (its "LFO" is internal audio-rate per-voice modulation, not
+  transport-synced). Fully decoupled from the host jump.
+- `~/CLionProjects/chords-sequencer/` (overtake tool, api_v2, min_host 0.9.16):
+  calls `host->midi_send_to_move_in`, which upstream **renamed** to
+  `midi_inject_to_move` at the *same struct offset + signature*. ABI-stable — the
+  module's vendored-header name resolves to the host's function pointer
+  correctly (already the case on the fork v0.9.17 host). The host forces cable 0
+  on inject, which is exactly what the module's `route_move=1` path wants. Its
+  24-PPQN tick-counting step timing is the correct model for hard quantization;
+  `get_beat_position()` (block-interpolated) would add jitter, so it is **not** a
+  simplification. Optional future hygiene: re-vendor the current upstream
+  `plugin_api_v1.h` (rename → `midi_inject_to_move`, pick up `slot_recv_channel`
+  + `get_beat_position`). No `min_host_version` bump needed. *(Repo had
+  uncommitted WIP at rebase time — left untouched.)*
 
 ### 2026-06-07 rebase (onto upstream `759095a6`)
 
