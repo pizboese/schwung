@@ -6,7 +6,7 @@ decisions and notes that don't belong upstream.
 ## Branch Goal
 
 Carry a small set of fork-only fixes for the `piz` deployment, while staying
-close to upstream. As of 2026-07-23 (upstream v0.11.6), the sole C-code delta
+close to upstream. As of 2026-08-18 (upstream v0.12.0), the sole C-code delta
 versus upstream is the FX_BROADCAST fix for the cable-2 channeled dispatch path
 (see below) — upstream has since landed equivalents for everything else,
 including the `overtake_midi_send_external` rewrite (v0.9.16, see Reconciled
@@ -45,6 +45,94 @@ filter. Worth filing upstream when convenient.
 
 Rebases onto upstream/main drop piz commits whose user-visible problem was
 fixed by upstream (sometimes with a stricter/more general mechanism).
+
+### 2026-08-18 rebase (onto upstream `e3508504`, v0.12.0)
+
+Upstream jump **v0.11.6 → v0.12.0** (103 commits). **No piz commits dropped** —
+the sole code delta (FX_BROADCAST in `shadow_dispatch_cable2_channeled_slots`,
+see §"Changes Made" #1) is *still* unaddressed upstream. Verified directly
+against `upstream/main`: that function dispatches matched slots via
+`MOVE_MIDI_SOURCE_EXTERNAL` (now with `shadow_chain_apply_transpose`) but still
+never broadcasts unmatched cable-2 events to audio FX / Master FX.
+
+Rebase was **conflict-free** (12/12 commits). Only two upstream commits touched
+`shadow_midi.c` (`21e1d14a`, `fdb1a2de`) and **neither** goes near the cable-2
+function — both work in the inject/drain area (`shadow_drain_midi_inject`, plus
+a new dedicated shim→Move single-slot channel). Delta re-verified by reading the
+resulting function, not just the clean-apply exit code: `has_direct` guard at
+top of function, broadcast block at the end of the per-event loop, sharing the
+loop's `status/d1/d2`. Note the broadcast deliberately does **not** apply
+upstream's new per-slot transpose — FX/Master-FX should see raw events.
+
+**Topology note.** Unlike 2026-07-23, local `main` *was* a clean ancestor of
+`upstream/main` this round (the previous rebase realigned it), so
+`git rebase --onto upstream/main main piz` was both the playbook-correct and the
+formula-correct command.
+
+Notable upstream changes this batch (inherited; reviewed, none break the delta):
+
+- **param-pages** (~40 commits, merged at `fea6e235`): a whole knob-page
+  subsystem — pure page planner, metadata classification, dial layout,
+  screen-reader strings, interaction controller, shadow view module. Self-contained.
+- **USB-C audio-out source persistence** (`efa56838` and friends): Move never
+  persists its USB-C out selection; Schwung now observes the XMOS SysEx pair,
+  persists it, and re-asserts ~5 s after boot. New `usbc_out_persist` setting.
+- **Overtake fixes** (`8f2c05cf`, `20ed5f3c`, `21e1d14a`, `5f97f48f`, `4aaf9aed`,
+  `709e7e91`, `ac3dfcbd`, `f707a296`): see §6b — several directly benefit
+  `chords-sequencer`.
+- **`shim: recover a dead shadow_ui instead of leaving a zombie`** (`fce209f0`)
+  and `35351689` (double-fork curl so analytics don't leak zombies).
+- **`plugin_api_v1.h` unchanged this batch** — zero ABI movement.
+
+**Test-suite note (environment, not code).** `tests/host` initially showed 33
+failures on this machine, *all environmental*:
+
+1. 19 needed `rg` (ripgrep), which was not installed → installed to `~/.local/bin`.
+2. 14 died on `set -euo pipefail` because those files had **CRLF** line endings
+   in the *working tree only*. The committed blobs are LF (confirmed with
+   `git cat-file -p`), and `core.autocrlf=input` never rewrites on checkout, so
+   some local editor had written them. Stripping the CRs restored a byte-identical
+   match to the index (same blob hash `8d6317e1…`, same mode `100755`, nothing
+   staged) — a working-tree repair, **no repo change**.
+
+After both: **`tests/host` 54/54 pass**, plus `make -C tests/host test` all green.
+`tests/shadow/test_parked_overtake_shim_isolation.sh` fails, but that is
+**upstream's own breakage**, not ours: piz's `shadow_ui.js` is byte-identical to
+upstream's, and upstream's `5f97f48f` introduced `overtakeModuleCaps` without
+updating that harness. `tests/shadow` is not CI-gated (see CLAUDE.md's note about
+~20 stale failures).
+
+**External modules checked (§6b).** Both sibling repos keep working on v0.12.0
+with **no code change required**:
+
+- `~/CLionProjects/schwung-vdrum/` (sound_generator, api_v2, v0.5.0): still uses
+  **zero** `host->` callbacks, so the host jump cannot reach it. Unaffected.
+- `~/CLionProjects/chords-sequencer/` (overtake tool, api_v2, min_host 0.9.16):
+  uses `host->log`, `host->midi_send_external`, `host->midi_send_to_move_in`.
+  Its vendored `plugin_api_v1.h` is stale, but **ABI-safe**: slots 1–8 align
+  exactly with upstream, and slot 8 is the same pointer/signature merely renamed
+  (`midi_send_to_move_in` → `midi_inject_to_move`). Upstream *appended*
+  `slot_recv_channel` + `get_beat_position` at slots 9–10; the module references
+  nothing past slot 8, so it never reads a misaligned pointer.
+
+  It **benefits** from this batch without any change:
+  - `20ed5f3c` — stale MIDI_IN SysEx slots were dispatching `status=0 d1=0 d2=0`
+    into overtake JS ~10×/s forever. Its handler (`status & 0xF0` → 0) ignored
+    them, so nothing was broken, but the churn and log spam are now gone.
+  - `5f97f48f` — suspend LED handoff is now **opt-in** via
+    `native_led_repaint_on_suspend`. It does not declare it, so it gets the
+    ordinary snapshot restore back, which is the *correct* behaviour for a
+    sequencer that lights many pads (they no longer stay lit after suspend).
+    Same commit fixes stale metadata on relaunch, which is what made
+    `suspend_keeps_js` (which it *does* declare) unreliable.
+  - `8f2c05cf` — overtake DSP `dlopen`/`create_instance` moved off the SPI
+    thread, removing a measured ~11.5 ms audio stall on every tool open.
+  - `4aaf9aed`, `21e1d14a`, `709e7e91` — Shift no longer latches on overtake
+    entry/resume.
+
+  Optional future hygiene (unchanged from last round): re-vendor the current
+  upstream header. No `min_host_version` bump needed. *(Repo again had
+  uncommitted WIP in `src/dsp/chord_engine.c` + `src/ui.js` — left untouched.)*
 
 ### 2026-07-23 rebase (onto upstream `4519d26d`, v0.11.6)
 
@@ -404,6 +492,23 @@ ssh ableton@move.local "rm -f /data/UserData/schwung/debug_log_on"    # disable
   `git -C libs/link checkout "$(git ls-tree upstream/main libs/link | awk '{print $3}')"`.
 - **Force-push with lease** (`--force-with-lease`), never bare `--force`,
   on user-owned branches.
+
+- **`tests/host` needs `rg` (ripgrep) on PATH.** ~19 of the shell tests shell out
+  to `rg`; without it they fail with `rg: command not found` and look like real
+  regressions. No root on this box — install to `~/.local/bin`:
+  `curl -sSL -o rg.tar.gz https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz && tar xzf rg.tar.gz && cp ripgrep-*/rg ~/.local/bin/`
+  then `export PATH="$HOME/.local/bin:$PATH"` for the test run.
+- **CRLF creeps into `tests/host/*.sh` in the working tree.** Symptom:
+  `set: pipefail: invalid option name` under bash 5.2. The committed blobs are
+  LF and `core.autocrlf=input` never rewrites on checkout, so this is a *local
+  editor* artifact, not a repo change — `sed -i 's/\r$//'` on the affected files
+  restores a byte-identical match to the index (verify with `git hash-object`
+  vs `git ls-files -s`; `git status` may show a stale `M` until a `git add`
+  refreshes the stat cache, with nothing actually staged). Never commit these.
+- **`tests/shadow` is not CI-gated and carries stale failures.** Before treating
+  one as a regression, check whether the file it exercises differs from
+  `upstream/main` at all (`git diff upstream/main..piz -- <file>`); if it is
+  byte-identical, the breakage is upstream's.
 - **Ask, don't assume, on each drop.** Even when an upstream commit looks like a
   clear superset, surface it to the user one-by-one (§3). The user wants the call
   on each piece. The deploy step (§9) also needs explicit go-ahead.
